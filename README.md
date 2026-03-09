@@ -29,8 +29,20 @@ The dataset used in this study is not publicly available due to project restrict
 
 Example input format is provided.
 
-## Usage
-Run the training script:
+## Workflow
+The modelling workflow includes three main stages:
+1. **Feature pre-training**
+   - Extract nonlinear interaction features using gradient boosting models.
+   - Output: feature matrices used by the neural network.
+2. **Model training**
+   - Train the attention-enhanced MLP model.
+   - Hyperparameters are optimised using Optuna.
+3. **Model interpretation**
+   - Calculate SHAP values to quantify the contribution of candidate drivers.
 
+## Usage
+Run the scripts in the following order:
 ```bash
-python train_model.py
+python Pre-training.py
+python Train.py
+python SHAP.py
