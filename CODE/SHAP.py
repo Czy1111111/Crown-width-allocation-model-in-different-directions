@@ -14,7 +14,7 @@ import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ==== 0. 固定随机种子 & 绘图风格 ====
+
 def set_seed(seed: int = 42):
     random.seed(seed); np.random.seed(seed)
     torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
@@ -25,33 +25,33 @@ def set_seed(seed: int = 42):
 set_seed(42)
 sns.set(style="whitegrid", context="talk")
 
-# ==== 1. 中→英 列名映射 ====
+
 col_name_map = {
-    '胸径':'DBH','树高':'TreeHeight','枝下高':'HeightUnderBranch','总冠幅':'TotalCrownWidth',
+    'DBH':'DBH','H':'TreeHeight','UBH':'HeightUnderBranch','CW':'TotalCrownWidth',
     'DIS1':'Distance1','HR1':'HeightRatio1','DBHR1':'DBHRatio1','SR1':'SlopeRatio1',
     'DBH_nearest1':'DBH_Nearest1','Height_nearest1':'Height_Nearest1','Crown_width_nearest1':'CrownWidth_Nearest1',
     'DIS2':'Distance2','HR2':'HeightRatio2','DBHR2':'DBHRatio2','SR2':'SlopeRatio2',
     'DBH_nearest2':'DBH_Nearest2','Height_nearest2':'Height_Nearest2','Crown_width_nearest2':'CrownWidth_Nearest2',
     'PV':'PV','PH':'PH'
 }
-embed_map = {'方向':'Direction','TYPE_nearest1':'TypeNearest1','TYPE_nearest2':'TypeNearest2'}
+embed_map = {'DIR':'Direction','TYPE_nearest1':'TypeNearest1','TYPE_nearest2':'TypeNearest2'}
 
-# ==== 2. 数据加载与预处理 ====
+
 df = pd.read_excel(r'F:\1\1.xlsx')
-df = df[df['TYPE'] == 0].dropna(subset=['单方向冠幅'])
-y_raw = df['单方向冠幅'].values
+df = df[df['TYPE'] == 0].dropna(subset=['SCW'])
+y_raw = df['SCW'].values
 
 feature_cols = [
-    '胸径','树高','枝下高','总冠幅',
+    'DBH','H','UBH','CW',
     'DIS1','HR1','DBHR1','SR1',
     'DBH_nearest1','Height_nearest1','Crown_width_nearest1',
     'DIS2','HR2','DBHR2','SR2',
     'DBH_nearest2','Height_nearest2','Crown_width_nearest2',
     'PV','PH'
 ]
-embed_cols = ['方向','TYPE_nearest1','TYPE_nearest2']
+embed_cols = ['DIR','TYPE_nearest1','TYPE_nearest2']
 
-# 填充与 mask
+
 df_filled = pd.DataFrame(); mask_cols = []
 for c in feature_cols:
     na = df[c].isna().astype(int)
@@ -60,11 +60,11 @@ for c in feature_cols:
     mc = f"{c}_valid"; mask_cols.append(mc)
     df_filled[mc] = 1 - na
 
-# 嵌入列
+
 for c in embed_cols:
     df_filled[c] = df[c].fillna(0).astype(int)
 
-# MOE 特征
+
 X_moe = np.concatenate([
     np.load('X_train_moe.npy'),
     np.load('X_val_moe.npy'),
@@ -72,14 +72,14 @@ X_moe = np.concatenate([
 ], axis=0)
 assert len(df_filled) == len(X_moe)
 
-# 加权特征
+
 bases = ['DBH_nearest','Height_nearest','Crown_width_nearest']
 for p in ['1','2']:
     for b in bases:
         nm = f"{b}{p}"
         df_filled[f"{nm}_weighted"] = df_filled[nm] / (df_filled[f"DIS{p}"] + 0.1)
 
-# 重命名列
+
 rm = {}
 for c in feature_cols:
     en = col_name_map[c]
@@ -93,26 +93,26 @@ for c in embed_cols:
     rm[c] = embed_map[c]
 df_filled.rename(columns=rm, inplace=True)
 
-# 构造特征列表
+
 num_feats      = [col_name_map[c] for c in feature_cols]
 mask_feats     = [f"{col_name_map[c]}_valid" for c in feature_cols]
 weighted_feats = [f"{col_name_map[f'{b}{p}']}_Weighted" for b in bases for p in ['1','2']]
 numerical_cols = num_feats + mask_feats + weighted_feats
 embed_english  = [embed_map[c] for c in embed_cols]
 
-# 标准化 & 拼接
+
 scaler = QuantileTransformer(output_distribution='normal', random_state=42)
 X_num  = scaler.fit_transform(df_filled[numerical_cols].values)
 X_all  = np.hstack([X_num, X_moe])
 embed_feats = df_filled[embed_english].values.astype(int)
 
-# 划分数据集
+
 X_trval, X_test, y_trval, y_test, e_trval, e_test = train_test_split(
     X_all, y_raw, embed_feats, test_size=0.15, random_state=42)
 X_train, X_val, y_train, y_val, e_train, e_val = train_test_split(
     X_trval, y_trval, e_trval, test_size=0.17647, random_state=42)
 
-# 张量化
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def to_tensor(x, is_target=False):
     t = torch.tensor(x, dtype=torch.float32)
@@ -124,7 +124,7 @@ e_tr, e_v, e_te = (torch.tensor(e_train, dtype=torch.long),
                    torch.tensor(e_val,   dtype=torch.long),
                    torch.tensor(e_test,  dtype=torch.long))
 
-# ==== 3. 模型定义 ====
+
 class Swish(nn.Module):
     def forward(self, x): return x * torch.sigmoid(x)
 
@@ -158,7 +158,7 @@ class AttentionMLPWithEmbedding(nn.Module):
         m    = self.mlp(xcat.squeeze(1))
         return self.out(torch.cat([h, m], dim=-1))
 
-# ==== 4. 训练 ====
+
 class MixedLoss(nn.Module):
     def __init__(self, alpha=0.7):
         super().__init__()
@@ -200,7 +200,7 @@ for epoch in range(200):
 
 torch.save(best_state, 'best_model.pth')
 
-# ==== 5. 测试评估 & R² 曲线 ====
+
 model.load_state_dict(torch.load('best_model.pth')); model.eval()
 with torch.no_grad():
     tp = model(X_te.to(device), e_te.to(device)).cpu().numpy().flatten()
@@ -212,7 +212,7 @@ plt.plot(history, color='C1')
 plt.xlabel('Epoch'); plt.ylabel('Validation R²')
 plt.title('Validation R² over Epochs'); plt.grid(); plt.tight_layout(); plt.show()
 
-# ==== 6. SHAP 分析 ====
+
 shap_X        = np.hstack([X_num, embed_feats])
 feature_names = numerical_cols + embed_english
 moe_mean      = X_moe.mean(axis=0)
@@ -230,27 +230,27 @@ def model_fn(x: np.ndarray) -> np.ndarray:
 explainer = shap.Explainer(model_fn, shap_X[:200])
 shap_vals  = explainer(shap_X[:200])
 
-# 6.1 全局 Summary
+
 shap.summary_plot(shap_vals.values, shap_X[:200],
                   feature_names=feature_names, show=False)
 plt.title('SHAP Summary: Global Importance')
 plt.tight_layout(); plt.show()
 
-# 6.2 DBH 依赖
+
 idx_dbh = feature_names.index('DBH')
 shap.dependence_plot(idx_dbh, shap_vals.values, shap_X[:200],
                      feature_names=feature_names, show=False)
 plt.title('SHAP Dependence: DBH')
 plt.tight_layout(); plt.show()
 
-# 6.3 Direction 依赖
+
 idx_dir = feature_names.index('Direction')
 shap.dependence_plot(idx_dir, shap_vals.values, shap_X[:200],
                      feature_names=feature_names, show=False)
 plt.title('SHAP Dependence: Direction')
 plt.tight_layout(); plt.show()
 
-# 6.4 平均绝对 SHAP 条形图 (Top 10)
+
 mean_abs = np.abs(shap_vals.values).mean(axis=0)
 top_idx  = np.argsort(mean_abs)[::-1][:10]
 top_names= [feature_names[i] for i in top_idx]
@@ -263,7 +263,7 @@ plt.title('Mean |SHAP| for Top 10 Features')
 plt.xlabel('Mean |SHAP value|'); plt.ylabel('Feature')
 plt.tight_layout(); plt.show()
 
-# 6.5 局部瀑布图 (Waterfall) for sample 0
+
 exp0 = shap.Explanation(values=shap_vals.values[0],
                         base_values=shap_vals.base_values[0],
                         data=shap_X[0],
@@ -271,3 +271,4 @@ exp0 = shap.Explanation(values=shap_vals.values[0],
 shap.plots.waterfall(exp0, show=False)
 plt.title('SHAP Waterfall: Sample 0')
 plt.tight_layout(); plt.show()
+
