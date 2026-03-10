@@ -6,7 +6,7 @@ from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 import optuna
 
-# 固定随机种子
+
 def set_seed(seed=42):
     random.seed(seed); np.random.seed(seed)
     torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
@@ -15,17 +15,17 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 set_seed(42)
 
-# ========== 1. 数据处理 ==========
+
 df = pd.read_excel(r'F:\1\1.xlsx')
 df = df[df['TYPE'] == 0].copy()
-target_col = '单方向冠幅'
+target_col = 'SCW'
 df = df[~df[target_col].isna()].copy()
 
-embed_cols = ['方向', 'TYPE_nearest1', 'TYPE_nearest2']
-embed_col_dims = {'方向': 4, 'TYPE_nearest1': 21, 'TYPE_nearest2': 21}
+embed_cols = ['DIR', 'TYPE_nearest1', 'TYPE_nearest2']
+embed_col_dims = {'DIR': 4, 'TYPE_nearest1': 21, 'TYPE_nearest2': 21}
 
 feature_cols = [
-    '胸径', '树高', '枝下高', '总冠幅',
+    'DBH', 'H', 'UBH', 'CW',
     'DIS1', 'HR1', 'DBHR1', 'SR1',
     'DBH_nearest1', 'Height_nearest1', 'Crown_width_nearest1',
     'DIS2', 'HR2', 'DBHR2', 'SR2',
@@ -64,7 +64,7 @@ X_all = np.hstack([X_orig_scaled, X_moe])
 embed_features = df_filled[embed_cols].values.astype(int)
 y_all = df[target_col].values
 
-# ========== 2. 数据划分 ==========
+
 X_train_val, X_test, y_train_val, y_test, embed_train_val, embed_test = train_test_split(
     X_all, y_all, embed_features, test_size=0.15, random_state=42)
 X_train, X_val, y_train, y_val, embed_train, embed_val = train_test_split(
@@ -83,7 +83,7 @@ embed_train_tensor = torch.tensor(embed_train, dtype=torch.long)
 embed_val_tensor = torch.tensor(embed_val, dtype=torch.long)
 embed_test_tensor = torch.tensor(embed_test, dtype=torch.long)
 
-# ========== 3. 模型结构 ==========
+
 class Swish(nn.Module):
     def forward(self, x): return x * torch.sigmoid(x)
 
@@ -91,7 +91,7 @@ class AttentionMLPWithEmbedding(nn.Module):
     def __init__(self, input_dim, d_model=128, nhead=4, dropout=0.2, act_name='swish'):
         super().__init__()
         self.embed_layers = nn.ModuleList([
-            nn.Embedding(embed_col_dims['方向'], 4),
+            nn.Embedding(embed_col_dims['DIR'], 4),
             nn.Embedding(embed_col_dims['TYPE_nearest1'], 6),
             nn.Embedding(embed_col_dims['TYPE_nearest2'], 6),
         ])
@@ -101,7 +101,7 @@ class AttentionMLPWithEmbedding(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True, dropout=dropout)
         self.norm = nn.LayerNorm(d_model)
 
-        # 激活函数选择
+
         if act_name == 'swish':
             act_fn = Swish()
         elif act_name == 'relu':
@@ -140,7 +140,7 @@ class AttentionMLPWithEmbedding(nn.Module):
         x_cat = torch.cat([attn_out, x_mlp], dim=-1)
         return self.output(x_cat)
 
-# ========== 4. 损失函数 + R² ==========
+
 class MixedLoss(nn.Module):
     def __init__(self, alpha=0.7):
         super().__init__()
@@ -154,7 +154,7 @@ def evaluate_r2(y_true, y_pred):
     mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
     return r2_score(y_true[mask], y_pred[mask]) if np.sum(mask) > 0 else -np.inf
 
-# ========== 5. Optuna 调参函数 ==========
+
 def objective(trial):
     d_model = trial.suggest_categorical('d_model', [64, 96, 128, 192])
     nhead = trial.suggest_categorical('nhead', [2, 4, 8])
@@ -209,7 +209,7 @@ def objective(trial):
         if trial.should_prune():
             raise optuna.TrialPruned()
 
-        # 早停机制
+
         if val_r2 > best_val_r2 + 1e-5:
             best_val_r2 = val_r2
             best_state = model.state_dict()
@@ -225,14 +225,14 @@ def objective(trial):
     torch.save(best_state, 'best_attention_model.pth')
     return best_val_r2
 
-# ========== 6. 启动 Optuna 调参 ==========
+
 study = optuna.create_study(direction='maximize', pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=20))
 study.optimize(objective, n_trials=50, timeout=None)
 
-print("最优参数:", study.best_params)
-print("验证集 R²: %.4f" % study.best_value)
+print("BEST:", study.best_params)
+print("VAL R²: %.4f" % study.best_value)
 
-# ========== 7. 测试集评估 ==========
+
 best_model = AttentionMLPWithEmbedding(
     X_train.shape[1],
     d_model=study.best_params['d_model'],
@@ -246,4 +246,5 @@ best_model.eval()
 with torch.no_grad():
     test_pred = best_model(X_test_tensor.to(device), embed_test_tensor.to(device)).cpu().numpy().flatten()
     test_r2 = evaluate_r2(y_test_tensor.cpu().numpy().flatten(), test_pred)
-print("测试集 R²: %.4f" % test_r2)
+print("TEST R²: %.4f" % test_r2)
+
